@@ -1,0 +1,1828 @@
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  1
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00001 #include <p16F690.inc>
+                      00001         LIST
+                      00002 ; P16F690.INC  Standard Header File, Version 1.00    Microchip Technology, Inc.
+                      00588         LIST
+2007   30D4           00002         __config (_INTRC_OSC_NOCLKOUT & _WDT_OFF & _PWRTE_OFF & _MCLRE_OFF & _CP_OFF & _BOD_OFF & _IESO_
+                            OFF & _FCMEN_OFF)
+                      00003 ; ---------------------------
+                      00004 ; Configuration word register DS41204
+                      00005 ;----------------------------
+                      00006 ; ====================================================
+                      00007 ; Om assembly-programmering
+                      00008 ; ====================================================
+                      00009 ; DESTINASJONSREGISTER:
+                      00010 ; d = 0 (w): lagre resultatet i WORK,
+                      00011 ; d = 1 (f): lagre resultatet i filregister 'f' (default). WORK blir ikke endret.
+                      00012 ; Fx:  andwf variable,w -> work AND variable -> result to work
+                      00013 ; Fx:  andwf variable   -> work AND variable -> result to variable
+                      00014 ;
+                      00015 ; STATUS register: [- RP1 RP0 -  - Z - C]
+                      00016 ;
+                      00017 ; SUBTRAKSJON:
+                      00018 ; F - W =   (subtract w FROM f -> f minus w)
+                      00019 ; set C før subtraksjon. Hvis C blir 0 -> lånt 1 (2's complement)
+                      00020 ;
+                      00021 ; ADDISJON:
+                      00022 ; clear C før addisjon. Hvis C blir 1 -> 1 i mente.
+                      00023 ;
+                      00024 ; ROTASJON
+                      00025 ; Rotasjon går via C. => 9 cp for full rotasjon
+                      00026 ;
+                      00027 ; ---------------------------
+                      00028 ; Erfaringer
+                      00029 ; ---------------------------
+                      00030 ; 1. Lag en og en modul
+                      00031 ; 2. Debug en og en modul
+                      00032 ; 3. Bruk en PORT fx PORTC til debugging.
+                      00033 ; 4. Debug: LED på minst en pinne. Sjekk hvor langt programmet kjører riktig.
+                      00034 
+                      00035 ; Fordel å legge initialisering i subrutiner. 
+                      00036 ; Da er det lett å kople ut moduler som ikke er debugget.
+                      00037 ; La variabler som skal kunne endres underveis være mest mulig public. 
+                      00038 ;  - Da er det lettere å endre seinere når koden er minder kjent.
+                      00039 ;  - Da kan variablene seinere hentes fra EE og ev "programmeres" der.
+                      00040 ; 
+                      00041 ; Test eg:
+                      00042 ;###
+                      00043 ;       bsf PORTB,4
+                      00044 ;###
+                      00045 
+                      00046 
+                      00047 ; ====================================================
+                      00048 ; PORGRAM:  8 fotoceller brukes til å bestemme posisjon.
+                      00049 ; ====================================================
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  2
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00050 ; Lysstyrken på fotocellene leses av idet laserstrålen farer forbi. 
+                      00051 ; Styken på signalet brukes til å beregne posisjonen.
+                      00052 ; Dette gjøres på følgende måte:
+                      00053 ; 1: Lysstyrken på alle fotocellene AD-konverteres.
+                      00054 ; 2: Posisjonen beregnes.
+                      00055 ;    Dette gjøres på følgende måte:
+                      00056 ;    - 1: Finner høysete verdi:
+                      00057 ;    - Bruker denne samt verdiene før og etter i beregningen.  
+                      00058 ;    - 2: Finner null-laserlys nivået ved å beregne snittet når de tre verdiene ikke er med.
+                      00059 ;    - 3: Trekk fra null-laserlys nivået fra de tre verdiene.
+                      00060 ;    - 4: Multipliser de tre verdiene med sitt cellenr og summer opp
+                      00061 ;    - 5: Summer opp de tre verdien.
+                      00062 ;    - 6: Divider den multipliserte summen med summen. Dette er posisjonen.
+                      00063 ; 3: Posisjonen mappes over til det tidsrommet som hydraulikken må være på for å nå null-posisjone.  
+                      00064 ; I tillegg håndteres situasjoner når laserstrålen forsvinner, er svak eller andre kilder forstyrrer.
+                      00065 
+                      00066 ;===================================================== 
+                      00067 ;       Variabler 
+                      00068 ;=====================================================
+                      00069         cblock  0x20 ; - 7F 
+                      00070 ; 8 x avmålinger
+  00000020            00071 V1
+  00000021            00072 V2
+  00000022            00073 V3
+  00000023            00074 V4
+  00000024            00075 V5
+  00000025            00076 V6
+  00000026            00077 V7
+  00000027            00078 V8
+  00000028            00079 V12
+  00000029            00080 V34
+  0000002A            00081 V56
+  0000002B            00082 V78
+  0000002C            00083 V14
+  0000002D            00084 V58
+                      00085 ; 
+  0000002E            00086 snitt
+  0000002F            00087 delta
+  00000030            00088 deltasnitt
+  00000031            00089 antINullSnitt
+  00000032            00090 Vmax
+  00000033            00091 VmaxV
+  00000034            00092 VmaxH
+  00000035            00093 maxL
+  00000036            00094 maxH
+  00000037            00095 snittL
+  00000038            00096 snittH
+  00000039            00097 VmaxNr
+  0000003A            00098 sumMax
+  0000003B            00099 snitt_5
+  0000003C            00100 snittNull 
+  0000003D            00101 VmaxSumL
+  0000003E            00102 VmaxSum
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  3
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+  0000003F            00103 VmaxSumH
+  00000040            00104 intA8
+  00000041            00105 intB4
+  00000042            00106 res16L
+  00000043            00107 res16H
+  00000044            00108 mulSumL
+  00000045            00109 mulSumH
+  00000046            00110 bits
+  00000047            00111 a16L
+  00000048            00112 a16H
+  00000049            00113 b16L
+  0000004A            00114 b16H
+  0000004B            00115 posisjon
+                      00116 
+                      00117 
+  0000004C            00118 toPosition
+  0000004D            00119 fromPosition
+  0000004E            00120 newDirection
+  0000004F            00121 oldDirection
+  00000050            00122 patternNr
+  00000051            00123 pattern
+  00000052            00124 RL
+  00000053            00125 event
+  00000054            00126 dV              ; actual pwm voltage 
+  00000055            00127 stepLength      ; count*64uS, a0 -> a*16+0 = 160 (*64uS) = 10mS
+  00000056            00128 countUp10mS 
+  00000057            00129 mS_Counts       ; count of 10mS timeslots count_10mS
+  00000058            00130 countTimeR
+  00000059            00131 countTimeL
+  0000005A            00132 deltastatus
+  0000005B            00133 snittDelta
+                      00134 
+                      00135 
+                      00136         endc
+                      00137 ;-----------------------------------
+                      00138 ;  Blokk for mellomlagring
+                      00139 ;----------------------------------------------------
+                      00140         cblock  0x30 ;40???
+                      00141 
+                      00142         endc
+                      00143 
+                      00144         cblock  0x30 
+                      00145 ;Mellomlagring av summerte avmålinger 
+                      00146 
+                      00147         endc
+                      00148 
+                      00149 ;--------------------------------------
+                      00150 ; Work og Status lagres i området som er felles for alle blokker (unbanked area) ved Interrupt.
+                      00151 ;--------------------------------------
+                      00152         cblock 0x7D     
+  0000007D            00153 mainWork
+  0000007E            00154 mainStatus
+                      00155         endc
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  4
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00156 
+                      00157 ;=========================================
+                      00158 ;       Main program 
+                      00159 ;=========================================
+                      00160 ;       Start og restart.  Kun 4 instruksjoner tilgjengelige før interrupt seksjonen.
+0000                  00161         org 0  
+0000   201C           00162         call OPPSETT_AV_ENHETER  ; Sett opp enheter og sett inn verdier
+0001   204A           00163         call OPPSTART            ; Slå på enheter
+0002   284F           00164         goto MAIN
+                      00165 
+                      00166 ;========================================
+                      00167 ;       Interrupt program
+                      00168 ;========================================
+0004                  00169         org 4    
+0004   00FD           00170         movwf mainWork   ; W -> mainWork
+0005   0803           00171         movfw STATUS     ; STATUS -> W 
+0006   00FE           00172         movwf mainStatus ;           W -> mainStatus
+                      00173 ;   Page 00
+0007   1283           00174         bcf     STATUS,RP0 ; Page: x0
+0008   1303           00175         bcf     STATUS,RP1 ; Page: 0x
+                      00176 
+                      00177 ;-----------------------------
+                      00178 ;       Stopp kjøring av hydraulikk ?
+                      00179 ;-----------------------------
+                      00180 
+                      00181 ;-----------------------------
+                      00182 ;       AD konvertering ?
+                      00183 ;-----------------------------
+                      00184 
+                      00185 ;-----------------------------
+                      00186 ;       Tikk fra klokka ?
+                      00187 ;-----------------------------
+                      00188 
+                      00189 ;-----------------------------
+                      00190 ;       SSI kommunikasjon ?
+                      00191 ;-----------------------------
+                      00192 
+                      00193 ;-----------------------------
+                      00194 ; Interrupt: Return
+                      00195 ;-----------------------------
+0009   087E           00196         movfw mainStatus
+000A   0083           00197         movwf STATUS
+000B   087D           00198         movfw mainWork
+000C   0009           00199  retfie
+                      00200 
+                      00201 
+                      00202 
+                      00203 ;The T0IF bit must be cleared in software. 
+                      00204 ;-----------------------------
+                      00205 ;       End dV (the time the PWM is on)
+                      00206 ;-----------------------------
+000D                  00207 TIMER0_IR
+                      00208 ; Counting the PWM pulse-width (the dV - the voltage applied. 32 = 100%)
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  5
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+000D   1D0B           00209         btfss INTCON,T0IF ; IR when True: Skip to TIMER0_IR_TRUE
+000E   2810           00210         goto TIMER0_IR_END
+000F                  00211 TIMER0_IR_TRUE
+                      00212 ; End of PWM pulse. Set all pins off
+000F   0186           00213         clrf PORTB 
+0010                  00214 TIMER0_IR_END
+                      00215 ;-----------------------------
+                      00216 ;       Set pattern, set dV, tell main to produce new pattern and dV
+                      00217 ;-----------------------------
+0010                  00218 TIMER2_IR
+                      00219 ; Start a new PWM pulse
+0010   1C8C           00220         btfss PIR1,TMR2IF ; IR when True: Skip to TIMER2_IR_TRUE
+0011   2818           00221         goto TIMER2_IR_END
+0012                  00222 TIMER2_IR_TRUE
+                      00223 ; set pattern to use
+                      00224 ;       movfw pattern
+0012   0086           00225         movwf PORTB ; PORTB Pin 7,6,5,4 ----
+                      00226 ; set pwm time = dV (timer0)
+0013   0854           00227         movfw dV
+0014   0081           00228         movwf TMR0 ; when TMR0 is written, the increment is inhibited for the following two instruction 
+                            cycles
+0015   110B           00229         bcf INTCON,T0IF  ; clear TMR0-IR
+0016   108C           00230         bcf PIR1,TMR2IF  ; clear TMR2-IR
+                      00231 ; tell MAIN to find the pattern and pulselength for the next PWM-pulse. 
+0017   1453           00232         bsf event,0 
+0018                  00233 TIMER2_IR_END
+                      00234 ;-----------------------------
+                      00235 ; Interrupt: Return
+                      00236 ;-----------------------------
+0018   087E           00237         movfw mainStatus
+0019   0083           00238         movwf STATUS
+001A   087D           00239         movfw mainWork
+001B   0009           00240  retfie
+                      00241 
+                      00242 ;========================================
+                      00243 ; MODULER
+                      00244 ;  PINNER, PORTER, KLOKKE, AD, TMR0, TMR2, 
+                      00245 ;========================================
+001C                  00246 OPPSETT_AV_ENHETER
+                      00247 
+                      00248 ;----------------------------------------
+                      00249 ;       OPPSETT AV KLOKKE: Frekvens 8 MHz    
+                      00250 ;----------------------------------------
+001C   1683           00251         bsf     STATUS,RP0 ; Page: 01
+                      00252 ;   OSCCON: -xxx ---- = The frequency selected
+                      00253 ;    xxx = 7->8Mhz 6->4MHz  5->2MHz 4->1MHz 3->500k 2->250k 1-> 125k 0->ekstern 
+                      00254 ;   -xxx ---1 = Selecting freq from internal setting
+001D   308F           00255         movlw 0x8f  ; clearing out the old frequency  
+Message[305]: Using default destination of 1 (file).
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+001E   058F           00256         andwf OSCCON 
+001F   3071           00257         movlw 0x71  ; internal osc at 7-> 8 MHz
+Message[305]: Using default destination of 1 (file).
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  6
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0020   048F           00258         iorwf OSCCON 
+0021   1283           00259         bcf     STATUS,RP0 ; Page: 00
+                      00260 
+                      00261 ;----------------------------------------
+                      00262 ;       OPPSETT AV PINNER
+                      00263 ;----------------------------------------
+                      00264 ; Pin-retning: i/p=i, o/p=o
+                      00265 ; Pin-type: Analog=A, Digital=D
+                      00266 
+                      00267 ; 2 PortA5 o D FEIL
+                      00268 ; 3 PortA4 i A AD3
+                      00269 ; 4 PortA3 i D ADTRIG IR
+                      00270 ;17 PortA2 i A AD2
+                      00271 ;18 PortA1 i A AD1
+                      00272 ;19 PortA0 i A AD0    
+                      00273 
+                      00274 ;10 PortB7 i D xx Debug?
+                      00275 ;11 PortB6 i D SPI_Clk (Slave=i/p, master=o/p)
+                      00276 ;12 PortB5 i D xx Debug? 
+                      00277 ;13 PortB4 i D SPI_Din
+                      00278 
+                      00279 ; 9 PortC7 o D SPI_Dut
+                      00280 ; 8 PortC6 i D SPI_Sla (Modul aktiv ved 0)
+                      00281 ; 5 PortC5 o D OPP
+                      00282 ; 6 PortC4 o D NED
+                      00283 ; 7 PortC3 i A AD7
+                      00284 ;14 PortC2 i A AD6
+                      00285 ;15 PortC1 i A AD5
+                      00286 ;16 PortC0 i A AD4
+                      00287 
+                      00288 ;Pin-type: Analog=1, Digital=0
+                      00289 ; ANSEL  7654 3210 <- Analog pin-channelnr
+                      00290 ; ANSELH ---- BA98 <- Analog pin-channelnr (11-8)
+0022   1703           00291         bsf     STATUS,RP1      ; Page: 10
+0023   30FF           00292         movlw 0xff      ; ANSEL: 1111 1111, 0-7 analog
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0024   009E           00293         movwf ANSEL     
+0025   3000           00294         movlw 0x00      ; ANSEH: ---- 0000, 8-B digital
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0026   009F           00295         movwf ANSELH    
+0027   1303           00296         bcf     STATUS,RP1  ; Page: 00
+                      00297 
+                      00298 ;Pin-retning:  i/p=1,  o/p=0
+0028   1683           00299         bsf     STATUS,RP0 ; Page: 01
+0029   303F           00300         movlw   0x3f  ; PORTA retning --01 1111    
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+002A   0085           00301         movwf   TRISA 
+002B   300F           00302         movlw   0x0f  ; PORTB retning 1111 ----    
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+002C   0086           00303         movwf   TRISB 
+002D   30FF           00304         movlw   0xff  ; PORTC retning 0100 1111 
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  7
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+002E   0087           00305         movwf   TRISC 
+002F   1283           00306         bcf     STATUS,RP0 ; Page: 00
+                      00307 
+                      00308 ;Initialisering av port A,B og C
+0030   0185           00309         clrf PORTA ; setter verdiene til 0
+0031   0186           00310         clrf PORTB ; setter verdiene til 0
+0032   0187           00311         clrf PORTC ; setter verdiene til 0
+                      00312 
+                      00313 ;--------------------------------------------
+                      00314 ; OPPSETT AV AD
+                      00315 ;--------------------------------------------
+                      00316 ; AD-unit on/off, input voltage span, result format
+                      00317 ; Enhet PÅ=1, AV=0
+0033   101F           00318         bcf ADCON0,ADON ; AD-modul slås AV , og slås på i OPPSTART
+                      00319 ; Spennings-ref: Vdd=0, internal=1
+0034   131F           00320         bcf ADCON0,VCFG ; Bruker Vdd som spennings-ref
+                      00321 ; Resultatorganisering: 8+2bits=0, 2+8bits=1
+0035   139F           00322         bcf ADCON0,ADFM ; Bruker 8 fra 8+2
+                      00323 ; Konverteringstid (Tad) må være mellom 1,6uS og 6,5uS
+                      00324 ; ADCON1 -xxx ---- 
+                      00325 ;         101 8Mhz & Fosc/16 -> Tad = 2uS        
+                      00326 ;         010 8Mhz & Fosc/32 -> Tad = 4uS
+0036   1683           00327         bsf     STATUS,RP0 ; Page: 01
+0037   3050           00328         movlw 0x50 ; -101 ---- 8Mhz & Fosc/16 -> Tad = 2uS
+Message[305]: Using default destination of 1 (file).
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0038   059F           00329         andwf ADCON1 
+0039   1283           00330         bcf     STATUS,RP0 ; Page: 00
+                      00331 
+                      00332 ; Velg startkanal for konverteringene
+                      00333 ; ADCON0 --xx xx--  0000=AN0 etc
+003A   30C3           00334         movlw 0xc3 ; --00 00-- Velger AN0 først
+Message[305]: Using default destination of 1 (file).
+003B   059F           00335         andwf ADCON0
+                      00336 
+                      00337 ;--------------------------------------------
+                      00338 ; SEINERE: OPPSETT AV TIMER 2  time = 512 cp -> 64uS
+                      00339 ;--------------------------------------------
+                      00340 ; IR-flag is OFF - Interrupt gets enabled in STARTUP
+003C   108C           00341         bcf PIR1,TMR2IF ; Clear IR-flag
+                      00342 
+                      00343 ; Timer interrupt every 512cp:
+                      00344 ;   Frequency:          8 MHz
+                      00345 ;   Oscillator:         Fosc/4
+                      00346 ;   Pre scaling:        1:1      T2CON: _--- --00
+                      00347 ;   Count:              64       PR2:   0100 0000
+                      00348 ;   Post scaling:       1:2  T2CON: _000 1--- 
+                      00349 ;       = 8Mhz/4/1/64/2 = 64 uS interval
+                      00350 
+                      00351 ;T2CON: _--- --xx Prescaler  00=1:1, 01=1:4, 1x=1:16
+                      00352 ;T2CON: _xxx x--- Postscaler 0000=1:1 .. 1111=1:16
+                      00353 ;T2CON: _--- -x-- H:Timer2=ON L:Timer2=OFF
+                      00354 ;PR2:   xxxx xxxx TMR2 is increased and reset to zero after PR2 = TMR2   
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  8
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+003D   3008           00355         movlw 0x08 ; T2CON: pre + post + on: _000 1000
+003E   0092           00356         movwf T2CON
+003F   1683           00357         bsf     STATUS,RP0  ; Page: 01 
+0040   3040           00358         movlw 0x40 ; PR2: 0100 0000 = 64
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0041   0092           00359         movwf PR2 
+0042   1283           00360         bcf     STATUS,RP0  ; page: 00
+                      00361 
+                      00362 ;--------------------------------------------
+                      00363 ; SEINERE       OPPSETT AV TIMER 0  PWM pulse duration (dV) 32 individual voltagelevels)
+                      00364 ;--------------------------------------------
+                      00365 ; PWM pulse time = 512 cp:
+                      00366 ; Timer0 PWM pulse length: Fosc/4 * 1:4 * 32 (max count) = 512 cp
+                      00367 ; Interrupt when FF->00
+                      00368 
+                      00369 ; OPTION_REG: x--- ----  RABPU: pullUp: H=Disabled
+                      00370 ; OPTION_REG: -x-- ----  INTEDG: IR: H = on rising edge
+                      00371 ; OPTION_REG: --x- ----  T0CS: Clock source: L= internal
+                      00372 ; OPTION_REG: ---x ----  T0SE: IncrementEdge: H= 1->0
+                      00373 ; OPTION_REG: ---- x---  PSA: Prescaler assignment: L=Timer0
+                      00374 ; OPTION_REG: ---- -xxx  PS0-2: Prescaler: 000=1:2 ... 111=1:256
+                      00375 ; OPTION_REG: 1000 0001  Prescale 1:4
+                      00376 
+                      00377 ; IE is disabled - Interrupt gets enabled in STARTUP
+0043   128B           00378         bcf INTCON,T0IE ; Disable IE (INTCON<5>)
+0044   110B           00379         bcf INTCON,T0IF ; Clear IF (INTCON<2>)
+                      00380 ; T0 with prescaler
+0045   1683           00381         bsf     STATUS,RP0  ; Page: 01 
+0046   3081           00382         movlw 0x81      ; OPTION_REG: 1000 0001  Prescale 1:4
+Message[302]: Register in operand not in bank 0.  Ensure that bank bits are correct.
+0047   0081           00383         movwf OPTION_REG        
+0048   1283           00384         bcf     STATUS,RP0  ; page: 00
+                      00385 ; Clear T0 - Prescaler also cleared in the same go.
+                      00386 ; When TMR0 is written, the increment is inhibited for the following two instruction cycles
+0049   0181           00387         clrf TMR0
+                      00388 
+004A                  00389 OPPSTART
+                      00390 ;========================================
+                      00391 ;    START ENHETENE
+                      00392 ;========================================
+004A   141F           00393         bsf ADCON0,ADON ; ; Set A/D-unit ON
+                      00394 ;       bsf T2CON,2 ; Set TMR2-unit on
+                      00395 ;   TMR0-unit always on
+004B   1683           00396         bsf     STATUS,RP0 ; Page 01
+                      00397 ;       bsf PIE1,TMR2IE  ; Timer2 interrupt enabled
+                      00398 ;       bsf INTCON,T0IE  ; Timer0 interrupt enabled
+                      00399 ;       bsf INTCON,PEIE  ; Pheripheral units interrupt enabled (TMR2)
+                      00400 ;       bsf INTCON,GIE   ; Global interrupt enabled
+004C   1283           00401         bcf     STATUS,RP0 ; Page 00
+                      00402 
+004D   0008           00403  return
+                      00404 
+                      00405 ;========================================
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE  9
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00406 ;    SETUP MAIN
+                      00407 ;========================================
+004E                  00408 SETUP_MAIN
+                      00409 
+                      00410 ; Communication
+                      00411 ;       clrf event
+                      00412 
+004E   0008           00413  return
+                      00414 
+                      00415 ;========================================
+                      00416 ;    MAIN RUN
+                      00417 ;========================================
+004F                  00418 MAIN
+                      00419 
+004F                  00420 MAIN_LOOP
+                      00421 ; stopp...
+                      00422 ; AD-bit = 1
+                      00423 ; tic-bit = 1
+                      00424 ; set verdi i SSP-byte
+                      00425 
+                      00426 ; ----------------------
+                      00427 ; FINN POSISJON
+                      00428 ; 1: Finner først snittet samt den høyeste verdien. 
+                      00429 ; 2: Trekker fra verdien til den høyeste og de to på sidene fra snittet og deler på 5.
+                      00430 ;    Har nå funnet null-nivået. 
+                      00431 ; 3: Trekker null-nivået fra de tre verdiene som skal brukes i beregningen. 
+                      00432 ; 4: Multipliserer og deler og finner posisjonen
+                      00433 ; ----------------------
+                      00434 ; 1: Finn snitt av alle. 
+                      00435 ; (((V1+V2)/2 + (V3+V4)/2)/2 + ((V5+V6)/2 + (V7+V8)/2)/2)/2 -> snittAlle.
+                      00436 ; Shift R med Carry => Summer og del med to.
+                      00437 ;(V1+V2)/2 
+004F   1003           00438         bcf STATUS,C
+0050   0820           00439         movfw V1
+0051   0721           00440         addwf V2,w
+0052   00A8           00441         movwf V12
+Message[305]: Using default destination of 1 (file).
+0053   0CA8           00442         rrf V12 ;
+                      00443 ;(V3+V4)/2 
+0054   1003           00444         bcf STATUS,C
+0055   0822           00445         movfw V3
+0056   0723           00446         addwf V4,w
+0057   00A9           00447         movwf V34
+Message[305]: Using default destination of 1 (file).
+0058   0CA9           00448         rrf V34 
+                      00449 ;(V5+V6)/2 
+0059   1003           00450         bcf STATUS,C
+005A   0824           00451         movfw V5
+005B   0725           00452         addwf V6,w
+005C   00AA           00453         movwf V56
+Message[305]: Using default destination of 1 (file).
+005D   0CAA           00454         rrf V56 
+                      00455 ;(V7+V8)/2 
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 10
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+005E   1003           00456         bcf STATUS,C
+005F   0826           00457         movfw V7
+0060   0727           00458         addwf V8,w
+0061   00AB           00459         movwf V78
+Message[305]: Using default destination of 1 (file).
+0062   0CAB           00460         rrf V78 
+                      00461 ;(V12+V34/2) ---
+0063   1003           00462         bcf STATUS,C
+0064   0828           00463         movfw V12
+0065   0729           00464         addwf V34,w
+0066   00AC           00465         movwf V14
+Message[305]: Using default destination of 1 (file).
+0067   0CAC           00466         rrf V14
+                      00467 ;(V56+V78/2)
+0068   1003           00468         bcf STATUS,C
+0069   082A           00469         movfw V56
+006A   072B           00470         addwf V78,w
+006B   00AD           00471         movwf V58
+Message[305]: Using default destination of 1 (file).
+006C   0CAD           00472         rrf V58
+                      00473 ;(V14+V58/2)
+006D   1003           00474         bcf STATUS,C
+006E   082C           00475         movfw V14
+006F   072D           00476         addwf V58,w
+0070   00AE           00477         movwf snitt
+Message[305]: Using default destination of 1 (file).
+0071   0CAE           00478         rrf snitt
+                      00479 
+                      00480 ; 2: Hvis snitt + delta > 255 -> feil
+0072   01B0           00481         clrf deltasnitt ; snitt + delta
+0073                  00482 DELTASNITTSUM
+0073   1003           00483         bcf STATUS,C     ; clear C
+0074   082E           00484         movfw snitt      ; snitt -> w -> deltasnitt
+0075   00B0           00485         movwf deltasnitt 
+0076   082F           00486         movfw delta      ; delta -> w -> w+deltasnitt -> deltasnitt
+Message[305]: Using default destination of 1 (file).
+0077   07B0           00487         addwf deltasnitt 
+0078   1C03           00488         btfss STATUS,C  ; C=1? : Skip to DELTASNITTSUM_NOT_OK
+0079   287C           00489         goto DELTASNITTSUM_END
+007A                  00490 DELTASNITTSUM_NOT_OK
+007A   3001           00491         movlw 0x01 ; feil nr 1: Snitt + delta er for høy
+007B   29A0           00492     goto FEIL
+007C                  00493 DELTASNITTSUM_END
+                      00494 
+                      00495 ; 3: Finn den med høyest nivå samt målingene ved sida
+007C   01B1           00496         clrf antINullSnitt ; Antall målinger som nullsnitt består av 
+                      00497 ; V1 > Vmax?  (Vmax-V1 -> Låneflagg satt -> V1 er høyest )
+007D                  00498 V1_ER_MAX
+007D   1403           00499         bsf STATUS,C   ; Sett borrow 
+007E   0820           00500         movfw V1       ; V1 -> w, Vmax-w -> w
+007F   0232           00501         subwf Vmax,w   ; SUB: f-w 
+0080   1803           00502         btfsc STATUS,C ; C=0? : Har lånt, V1 er høyere: Skip to TRUE 
+0081   288B           00503         goto V1_ER_MAX_END
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 11
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+0082                  00504 V1_ER_MAX_TRUE
+0082   01B3           00505         clrf VmaxV
+0083   0820           00506         movfw V1       ; V1 -> w, w -> Vmax
+0084   00B2           00507         movwf Vmax
+0085   0821           00508         movfw V2       ; V1 -> w, w -> VmaxH
+0086   00B4           00509         movwf VmaxH
+0087   3006           00510         movlw 0x06         ; 6 målinger i nullsnitt
+0088   00B1           00511         movwf antINullSnitt
+0089   3000           00512         movlw 0x00         ; Vmax nr
+008A   00B9           00513         movwf VmaxNr
+008B                  00514 V1_ER_MAX_END
+                      00515 ; V2 > Vmax? 
+008B                  00516 V2_ER_MAX
+008B   1403           00517         bsf STATUS,C   ; Sett borrow 
+008C   0821           00518         movfw V2       ; V2 -> w, Vmax-w -> w
+008D   0232           00519         subwf Vmax,w   ; SUB: f-w 
+008E   1803           00520         btfsc STATUS,C ; C=0? : Har lånt, V2 er høyere: Skip to TRUE 
+008F   289A           00521         goto V2_ER_MAX_END
+0090                  00522 V2_ER_MAX_TRUE
+0090   0820           00523         movfw V1       ; V1 -> w, w -> VmaxV
+0091   00B3           00524         movwf VmaxV
+0092   0821           00525         movfw V2       ; V2 -> w, w -> Vmax
+0093   00B2           00526         movwf Vmax
+0094   0822           00527         movfw V3       ; V3 -> w, w -> VmaxH
+0095   00B4           00528         movwf VmaxH
+0096   3005           00529         movlw 0x05         ; 5 målinger i nullsnitt
+0097   00B1           00530         movwf antINullSnitt
+0098   3001           00531         movlw 0x01         ; Vmax nr
+0099   00B9           00532         movwf VmaxNr
+009A                  00533 V2_ER_MAX_END
+                      00534 ; V3 > Vmax? 
+009A                  00535 V3_ER_MAX
+009A   1403           00536         bsf STATUS,C   ; Sett borrow 
+009B   0822           00537         movfw V3       ; V3 -> w, Vmax-w -> w
+009C   0232           00538         subwf Vmax,w   ; SUB: f-w 
+009D   1803           00539         btfsc STATUS,C ; C=0? : Har lånt, V3 er høyere: Skip to TRUE 
+009E   28A9           00540         goto V3_ER_MAX_END
+009F                  00541 V3_ER_MAX_TRUE
+009F   0821           00542         movfw V2       ; V2 -> w, w -> VmaxV
+00A0   00B3           00543         movwf VmaxV
+00A1   0822           00544         movfw V3       ; V3 -> w, w -> Vmax
+00A2   00B2           00545         movwf Vmax
+00A3   0823           00546         movfw V4       ; V4 -> w, w -> VmaxH
+00A4   00B4           00547         movwf VmaxH
+00A5   3005           00548         movlw 0x05         ; 5 målinger i nullsnitt
+00A6   00B1           00549         movwf antINullSnitt
+00A7   3002           00550         movlw 0x02         ; Vmax nr
+00A8   00B9           00551         movwf VmaxNr
+00A9                  00552 V3_ER_MAX_END
+                      00553 ; V4 > Vmax? 
+00A9                  00554 V4_ER_MAX
+00A9   1403           00555         bsf STATUS,C   ; Sett borrow 
+00AA   0823           00556         movfw V4       ; V4 -> w, Vmax-w -> w
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 12
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+00AB   0232           00557         subwf Vmax,w   ; SUB: f-w 
+00AC   1803           00558         btfsc STATUS,C ; C=0? : Har lånt, V4 er høyere: Skip to TRUE 
+00AD   28B8           00559         goto V4_ER_MAX_END
+00AE                  00560 V4_ER_MAX_TRUE
+00AE   0822           00561         movfw V3       ; V3 -> w, w -> VmaxV
+00AF   00B3           00562         movwf VmaxV
+00B0   0823           00563         movfw V4       ; V4 -> w, w -> Vmax
+00B1   00B2           00564         movwf Vmax
+00B2   0824           00565         movfw V5       ; V5 -> w, w -> VmaxH
+00B3   00B4           00566         movwf VmaxH
+00B4   3005           00567         movlw 0x05         ; 5 målinger i nullsnitt
+00B5   00B1           00568         movwf antINullSnitt
+00B6   3003           00569         movlw 0x03         ; Vmax nr
+00B7   00B9           00570         movwf VmaxNr
+00B8                  00571 V4_ER_MAX_END
+                      00572 ; V5 > Vmax? 
+00B8                  00573 V5_ER_MAX
+00B8   1403           00574         bsf STATUS,C   ; Sett borrow 
+00B9   0824           00575         movfw V5       ; V5 -> w, Vmax-w -> w
+00BA   0232           00576         subwf Vmax,w   ; SUB: f-w 
+00BB   1803           00577         btfsc STATUS,C ; C=0? : Har lånt, V5 er høyere: Skip to TRUE 
+00BC   28C7           00578         goto V5_ER_MAX_END
+00BD                  00579 V5_ER_MAX_TRUE
+00BD   0823           00580         movfw V4       ; V4 -> w, w -> VmaxV
+00BE   00B3           00581         movwf VmaxV
+00BF   0824           00582         movfw V5       ; V5 -> w, w -> Vmax
+00C0   00B2           00583         movwf Vmax
+00C1   0825           00584         movfw V6       ; V6 -> w, w -> VmaxH
+00C2   00B4           00585         movwf VmaxH
+00C3   3005           00586         movlw 0x05         ; 5 målinger i nullsnitt
+00C4   00B1           00587         movwf antINullSnitt
+00C5   3004           00588         movlw 0x04         ; Vmax nr
+00C6   00B9           00589         movwf VmaxNr
+00C7                  00590 V5_ER_MAX_END
+                      00591 ; V6 > Vmax? 
+00C7                  00592 V6_ER_MAX
+00C7   1403           00593         bsf STATUS,C   ; Sett borrow 
+00C8   0825           00594         movfw V6       ; V6 -> w, Vmax-w -> w
+00C9   0232           00595         subwf Vmax,w   ; SUB: f-w 
+00CA   1803           00596         btfsc STATUS,C ; C=0? : Har lånt, V6 er høyere: Skip to TRUE 
+00CB   28D6           00597         goto V6_ER_MAX_END
+00CC                  00598 V6_ER_MAX_TRUE
+00CC   0824           00599         movfw V5       ; V5 -> w, w -> VmaxV
+00CD   00B3           00600         movwf VmaxV
+00CE   0825           00601         movfw V6       ; V6 -> w, w -> Vmax
+00CF   00B2           00602         movwf Vmax
+00D0   0826           00603         movfw V7       ; V7 -> w, w -> VmaxH
+00D1   00B4           00604         movwf VmaxH
+00D2   3005           00605         movlw 0x05         ; 5 målinger i nullsnitt
+00D3   00B1           00606         movwf antINullSnitt
+00D4   3005           00607         movlw 0x05         ; Vmax nr
+00D5   00B9           00608         movwf VmaxNr
+00D6                  00609 V6_ER_MAX_END
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 13
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00610 ; V7 > Vmax? 
+00D6                  00611 V7_ER_MAX
+00D6   1403           00612         bsf STATUS,C   ; Sett borrow 
+00D7   0826           00613         movfw V7       ; V7 -> w, Vmax-w -> w
+00D8   0232           00614         subwf Vmax,w   ; SUB: f-w 
+00D9   1803           00615         btfsc STATUS,C ; C=0? : Har lånt, V7 er høyere: Skip to TRUE 
+00DA   28E5           00616         goto V7_ER_MAX_END
+00DB                  00617 V7_ER_MAX_TRUE
+00DB   0825           00618         movfw V6       ; V6 -> w, w -> VmaxV
+00DC   00B3           00619         movwf VmaxV
+00DD   0826           00620         movfw V7       ; V7 -> w, w -> Vmax
+00DE   00B2           00621         movwf Vmax
+00DF   0827           00622         movfw V8       ; V8 -> w, w -> VmaxH
+00E0   00B4           00623         movwf VmaxH
+00E1   3005           00624         movlw 0x05         ; 5 målinger i nullsnitt
+00E2   00B1           00625         movwf antINullSnitt
+00E3   3006           00626         movlw 0x06         ; Vmax nr
+00E4   00B9           00627         movwf VmaxNr
+00E5                  00628 V7_ER_MAX_END
+                      00629 ; V8 > Vmax? 
+00E5                  00630 V8_ER_MAX
+00E5   1403           00631         bsf STATUS,C   ; Sett borrow 
+00E6   0827           00632         movfw V8       ; V8 -> w, Vmax-w -> w
+00E7   0232           00633         subwf Vmax,w   ; SUB: f-w 
+00E8   1803           00634         btfsc STATUS,C ; C=0? : Har lånt, V8 er høyere: Skip to TRUE 
+00E9   28F3           00635         goto V8_ER_MAX_END
+00EA                  00636 V8_ER_MAX_TRUE
+00EA   0826           00637         movfw V7       ; V7 -> w, w -> VmaxV
+00EB   00B3           00638         movwf VmaxV
+00EC   0827           00639         movfw V8       ; V8 -> w, w -> Vmax
+00ED   00B2           00640         movwf Vmax
+00EE   01B4           00641         clrf VmaxH
+00EF   3006           00642         movlw 0x06         ; 6 målinger i nullsnitt
+00F0   00B1           00643         movwf antINullSnitt
+00F1   3007           00644         movlw 0x07         ; Vmax nr
+00F2   00B9           00645         movwf VmaxNr
+00F3                  00646 V8_ER_MAX_END
+                      00647 
+                      00648 ; 4. Hvis Vmax < delta+snitt -> feil (deltasnitt-Vmax)
+00F3                  00649 VMAX_UNDER_DELTASNITT
+00F3   1403           00650         bsf STATUS,C        ; Sett borrow 
+00F4   0832           00651         movfw Vmax          ; Vmax -> w, deltastatus-w -> deltastatus
+00F5   025A           00652         subwf deltastatus,w ; SUB: f-w 
+00F6   1C03           00653         btfss STATUS,C      ; C=1? : Har ikke lånt. Vmax for lav: Skip to FALSE 
+00F7   28FA           00654         goto VMAX_UNDER_DELTASNITT_END
+00F8                  00655 VMAX_UNDER_DELTASNITT_FALSE
+00F8   3002           00656         movlw 0x02 ; feil nr 2: Vmax ikke høy nok til å telle
+00F9   29A0           00657     goto FEIL
+00FA                  00658 VMAX_UNDER_DELTASNITT_END
+                      00659 
+                      00660 ; 5: Summer opp max-verdiene - og del dem på 8.
+00FA   01BA           00661         clrf sumMax
+00FB   1003           00662         bcf STATUS,C ; clear minne 
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 14
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+00FC   0833           00663         movfw VmaxV  ; VmaxV -> sumMax
+00FD   00BA           00664         movwf sumMax
+00FE   0832           00665         movfw Vmax    ; sumMax+Vmax -> sumMax
+Message[305]: Using default destination of 1 (file).
+00FF   07BA           00666         addwf sumMax  
+Message[305]: Using default destination of 1 (file).
+0100   0CBA           00667         rrf sumMax
+0101   1003           00668         bcf STATUS,C  ; clear minne 
+Message[305]: Using default destination of 1 (file).
+0102   0CB4           00669         rrf VmaxH     ; ---NB verdien er endret
+0103   1003           00670         bcf STATUS,C  ; clear minne 
+0104   0834           00671         movfw VmaxH   ; sumMax+VmaxH -> sumMax
+Message[305]: Using default destination of 1 (file).
+0105   07BA           00672         addwf sumMax
+Message[305]: Using default destination of 1 (file).
+0106   0CBA           00673     rrf sumMax
+0107   1003           00674         bcf STATUS,C  ; clear minne 
+Message[305]: Using default destination of 1 (file).
+0108   0CBA           00675     rrf sumMax
+                      00676 
+                      00677 ; 6. Tekk fra max-verdiene fra snitt
+0109   082E           00678         movfw snitt   ; snitt -> w, w -> snitt5
+010A   00BB           00679         movwf snitt_5     
+010B   1403           00680         bsf STATUS,C  ; Sett borrow 
+010C   083A           00681     movfw sumMax  ; snitt5-sumMax -> snitt5
+Message[305]: Using default destination of 1 (file).
+010D   02BB           00682         subwf snitt_5  ; SUB: f-w 
+                      00683 
+                      00684 ; 7. Dele på 5/6    (snitt_5*33h -> snittNull) 
+                      00685 ; IF antINullsnitt == 5
+010E                  00686 NULLSNITT_DIV
+010E   1403           00687         bsf STATUS,C  ; Sett borrow 
+010F   0831           00688         movfw antINullSnitt
+0110   3C05           00689         sublw 0x05    ; SUB: c-w 
+0111   1D03           00690         btfss STATUS,Z ; Er null. Skip to DIV_5
+0112   2922           00691         goto NULLSNITT_DIV_6
+0113                  00692 NULLSNITT_DIV_5
+                      00693 ;snitt_5/1 + snitt_5/2 + snitt_5/16 + snitt_5/32 -> 
+0113   083B           00694         movfw snitt_5 
+0114   00BC           00695         movwf snittNull 
+0115   1003           00696         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+0116   0CBB           00697         rrf snitt_5 
+0117   083B           00698         movfw snitt_5
+Message[305]: Using default destination of 1 (file).
+0118   07BC           00699         addwf snittNull
+0119   1003           00700         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+011A   0CBB           00701         rrf snitt_5 
+011B   1003           00702         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+011C   0CBB           00703         rrf snitt_5 
+011D   1003           00704         bcf STATUS,C  ; Clear minne
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 15
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+Message[305]: Using default destination of 1 (file).
+011E   0CBB           00705         rrf snitt_5 
+011F   083B           00706         movfw snitt_5
+Message[305]: Using default destination of 1 (file).
+0120   07BC           00707         addwf snittNull
+0121   2936           00708         goto NULLSNITT_DIV_END
+0122                  00709 NULLSNITT_DIV_6
+0122   083B           00710         movfw snitt_5 
+0123   00BC           00711         movwf snittNull 
+0124   1003           00712         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+0125   0CBB           00713         rrf snitt_5 
+0126   1003           00714         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+0127   0CBB           00715         rrf snitt_5 
+0128   083B           00716         movfw snitt_5
+Message[305]: Using default destination of 1 (file).
+0129   07BC           00717         addwf snittNull
+012A   1003           00718         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+012B   0CBB           00719         rrf snitt_5 
+012C   1003           00720         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+012D   0CBB           00721         rrf snitt_5 
+012E   083B           00722         movfw snitt_5
+Message[305]: Using default destination of 1 (file).
+012F   07BC           00723         addwf snittNull
+0130   1003           00724         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+0131   0CBB           00725         rrf snitt_5 
+0132   1003           00726         bcf STATUS,C  ; Clear minne
+Message[305]: Using default destination of 1 (file).
+0133   0CBB           00727         rrf snitt_5 
+0134   083B           00728         movfw snitt_5
+Message[305]: Using default destination of 1 (file).
+0135   07BC           00729         addwf snittNull
+0136                  00730 NULLSNITT_DIV_END
+                      00731 
+                      00732 ; 8: Korriger max-verdier: max - snittNull
+0136   1403           00733         bsf STATUS,C    ; Set borrow
+0137   083C           00734         movfw snittNull
+Message[305]: Using default destination of 1 (file).
+0138   02B3           00735         subwf VmaxV     ; f-w
+0139   1C03           00736         btfss STATUS,C  ; C=1? : Har ikke lånt. Skip nullstilling
+013A   01B3           00737         clrf VmaxV      ; nullstill hvis VmaxV er negativ
+013B   1403           00738         bsf STATUS,C    ; Set borrow
+013C   083C           00739         movfw snittNull
+Message[305]: Using default destination of 1 (file).
+013D   02B2           00740         subwf Vmax      ; f-w
+013E   1C03           00741         btfss STATUS,C  ; C=1? : Har ikke lånt. Skip nullstilling
+013F   01B2           00742         clrf Vmax       ; nullstill hvis VmaxV er negativ
+0140   1403           00743         bsf STATUS,C    ; Set borrow
+0141   083C           00744         movfw snittNull
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 16
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+Message[305]: Using default destination of 1 (file).
+0142   02B4           00745         subwf VmaxH     ; f-w
+0143   1C03           00746         btfss STATUS,C  ; C=1? : Har ikke lånt. Skip nullstilling
+0144   01B4           00747         clrf VmaxH      ; nullstill hvis VmaxV er negativ
+                      00748 
+                      00749 ; 9: summer: VmaxL, Vmax, VmaxH
+0145   0833           00750         movfw VmaxV
+0146   00BD           00751         movwf VmaxSumL
+0147   0832           00752         movfw Vmax
+Message[305]: Using default destination of 1 (file).
+0148   07BD           00753         addwf VmaxSumL
+0149   3000           00754         movlw 0x00
+Message[305]: Using default destination of 1 (file).
+014A   07BF           00755         addwf VmaxSumH
+014B   0834           00756         movfw VmaxH
+Message[305]: Using default destination of 1 (file).
+014C   07BD           00757         addwf VmaxSumL
+014D   3000           00758         movlw 0x00
+Message[305]: Using default destination of 1 (file).
+014E   07BF           00759         addwf VmaxSumH
+                      00760 ;10: multipliser: VmaxL*n, Vmax*(n+1), VmaxH*(n+2)
+                      00761         ;VmaxL * VmaxNr
+014F   0833           00762         movfw VmaxV             ;VmaxL -> intA8
+0150   00C0           00763         movwf intA8
+0151   0839           00764         movfw VmaxNr    ;VmaxNr -> intB4
+0152   00C1           00765         movwf intB4
+0153   218D           00766         call MULT8x4
+0154   0842           00767         movfw res16L    ;res16L -> resMultL
+0155   00C4           00768         movwf mulSumL
+0156   0843           00769         movfw res16H    ;res16H -> resMultH
+0157   00C5           00770         movwf mulSumH   
+                      00771         ;VmaxL * (VmaxNr+1)
+Message[305]: Using default destination of 1 (file).
+0158   0AB9           00772         incf VmaxNr             ;VmaxNr+1
+0159   0832           00773         movfw Vmax              ;VmaxL -> intA8
+015A   00C0           00774         movwf intA8
+015B   0839           00775         movfw VmaxNr    ;VmaxNr -> intB4
+015C   00C1           00776         movwf intB4
+015D   218D           00777         call MULT8x4
+015E   0842           00778         movfw res16L    ;res16L +> resMultL
+Message[305]: Using default destination of 1 (file).
+015F   07C4           00779         addwf mulSumL
+0160   0843           00780         movfw res16H    ;res16H +> resMultH
+Message[305]: Using default destination of 1 (file).
+0161   07C5           00781         addwf mulSumH   
+                      00782         ;VmaxL * (VmaxNr+2)
+Message[305]: Using default destination of 1 (file).
+0162   0AB9           00783         incf VmaxNr             ;VmaxNr+1
+0163   0834           00784         movfw VmaxH             ;VmaxL -> intA8
+0164   00C0           00785         movwf intA8
+0165   0839           00786         movfw VmaxNr    ;VmaxNr -> intB4
+0166   00C1           00787         movwf intB4
+0167   218D           00788         call MULT8x4
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 17
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+0168   0842           00789         movfw res16L    ;res16L -> resMultL
+Message[305]: Using default destination of 1 (file).
+0169   07C4           00790         addwf mulSumL
+016A   0843           00791         movfw res16H    ;res16H -> resMultH
+Message[305]: Using default destination of 1 (file).
+016B   07C5           00792         addwf mulSumH
+                      00793         
+                      00794 ; 11: Divisor ganges med 8. 
+016C   1003           00795         bcf STATUS,C    ; Clear borrow
+Message[305]: Using default destination of 1 (file).
+016D   0DBD           00796         rlf VmaxSumL            ; ganger med 8
+Message[305]: Using default destination of 1 (file).
+016E   0DBF           00797         rlf VmaxSumH
+Message[305]: Using default destination of 1 (file).
+016F   0DBD           00798         rlf VmaxSumL
+Message[305]: Using default destination of 1 (file).
+0170   0DBF           00799         rlf VmaxSumH
+Message[305]: Using default destination of 1 (file).
+0171   0DBD           00800         rlf VmaxSumL
+Message[305]: Using default destination of 1 (file).
+0172   0DBF           00801         rlf VmaxSumH
+                      00802 
+                      00803 ; 12: Divider 16:16=8
+                      00804 ;  intA16:intB16 = (posisjon)
+                      00805 ; AA-BB < 0? -> 0/1 shiftes inn i posisjon
+0173                  00806 DIV16
+0173   01CB           00807         clrf posisjon
+0174   3008           00808         movlw 0x08  ; 8 counts 
+0175   00C6           00809         movwf bits
+0176                  00810 DIV16_LOOP
+                      00811 ; telt ned?
+0176   0846           00812         movfw bits
+0177   1903           00813         btfsc STATUS,Z  ; 0 = not zero: Skip to MULT16_TRUE
+0178   298D           00814         goto DIV16_END  ; ferdig
+Message[305]: Using default destination of 1 (file).
+0179   03C6           00815         decf bits
+017A                  00816 DIV16_TRUE              ; a16L-b16L, a16H-b16L 
+017A   1403           00817         bsf STATUS,C    ; Set borrow
+017B   0847           00818         movfw a16L
+017C   0249           00819         subwf b16L,w
+017D   0848           00820         movfw a16H
+017E   024A           00821         subwf b16H,w
+Message[305]: Using default destination of 1 (file).
+017F   0CCB           00822         rrf posisjon            ; Shift inn 1 eller 0 
+0180   1C03           00823         btfss STATUS,C  ; H = Ikke lånt - kan trekke fra: Skip to SUBTRACT
+0181   298C           00824         goto DIV16_SUB_END
+0182   1403           00825         bsf STATUS,C    ; Set borrow
+0183   0847           00826         movfw a16L
+0184   0249           00827         subwf b16L,w
+0185   00C7           00828         movwf a16L
+0186   0848           00829         movfw a16H
+0187   024A           00830         subwf b16H,w
+0188   00CA           00831         movwf b16H
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 18
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+0189   1003           00832         bcf STATUS,C    ; Clear borrow
+Message[305]: Using default destination of 1 (file).
+018A   0CCA           00833         rrf b16H                ; result bit shifted in 
+Message[305]: Using default destination of 1 (file).
+018B   0CC9           00834         rrf b16L
+018C                  00835 DIV16_SUB_END
+018C   2976           00836         goto DIV16_LOOP
+018D                  00837 DIV16_END
+                      00838 
+                      00839 
+                      00840 
+                      00841 
+                      00842 
+                      00843 ; --- SUB -----------------------------
+                      00844 ;           MULTIPLY 8x4->16
+                      00845 ;---------------------------------------
+                      00846 ;intA8 x intB4 = res16
+018D                  00847 MULT8x4          
+018D   01C2           00848         clrf res16L
+018E   01C3           00849         clrf res16H
+018F   3004           00850         movlw 0x04  ; 4 shifts
+0190   00C6           00851         movwf bits ; 
+0191                  00852 MULT8
+                      00853 ; shift and add
+0191   0846           00854         movfw bits
+0192   1903           00855         btfsc STATUS,Z ; 0 = not zero: Skip to MULT16_TRUE
+0193   299F           00856         goto MULT8_END ; is zero
+0194                  00857 MULT8_TRUE
+                      00858 ;Rotate intB4 -> C -> intB4 -> C 
+0194   1003           00859         bcf STATUS,C
+Message[305]: Using default destination of 1 (file).
+0195   0CC1           00860         rrf intB4
+                      00861 ; if C = H add
+0196                  00862 MULT8_ADD
+0196   1C03           00863         btfss STATUS,C    ; C=1: Skip to MULT8_ADD_TRUE
+0197   299B           00864         goto MULT8_ADD_END
+0198                  00865 MULT8_ADD_TRUE
+0198   1003           00866         bcf STATUS,C
+                      00867 ; Add intA8 to res16H - shiftes mot R
+0199   0840           00868         movfw intA8
+Message[305]: Using default destination of 1 (file).
+019A   07C3           00869         addwf res16H
+019B                  00870 MULT8_ADD_END
+                      00871 ; Shift res32 ->
+Message[305]: Using default destination of 1 (file).
+019B   0CC3           00872         rrf res16H
+Message[305]: Using default destination of 1 (file).
+019C   0CC2           00873         rrf res16L
+Message[305]: Using default destination of 1 (file).
+019D   03C6           00874         decf bits
+019E   2991           00875         goto MULT8
+019F                  00876 MULT8_END
+019F   0008           00877         return
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 19
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+                      00878 
+                      00879 
+                      00880 
+01A0                  00881 FEIL
+                      00882 
+                      00883 
+                      00884 
+                      00885 
+                      00886 
+                      00887 ;-----------------
+01A0                  00888 TIC
+01A0   1C53           00889         btfss event,0  ; Bit0 = True?: Skip to TIC_TRUE
+01A1   29D2           00890         goto TIC_END    
+01A2                  00891 TIC_TRUE
+01A2   1053           00892         bcf event,0  ; event handled
+01A3   0807           00893         movfw PORTC
+                      00894 
+                      00895 ;--------------------------
+                      00896 ;  Count each 10 mS
+                      00897 ;--------------------------
+01A4                  00898 COUNT_UP_10mS
+Message[305]: Using default destination of 1 (file).
+01A4   0AD6           00899         incf countUp10mS
+01A5   0856           00900         movfw countUp10mS
+01A6   3AA0           00901         xorlw 0xa0 ; 10*16 * 64uS = 160 * 64uS -> 10mS
+01A7   1D03           00902         btfss STATUS,Z ; True: Skip to COUNT_UP_10mS_TRUE
+01A8   29BF           00903         goto COUNT_UP_10mS_END
+01A9                  00904 COUNT_UP_10mS_TRUE
+01A9   01D6           00905         clrf countUp10mS
+                      00906 ;--------------------------
+                      00907 ;  Forced left stepping - one step each 100mS
+                      00908 ;--------------------------
+01AA                  00909 LEFTWARDS
+01AA   0852           00910         movfw RL
+01AB   3A40           00911         xorlw 0x40 ; -L-- 0---
+01AC   1D03           00912         btfss STATUS,Z ; True: Skip to LEFTWARDS_TRUE
+01AD   29B6           00913         goto LEFTWARDS_FALSE
+01AE                  00914 LEFTWARDS_TRUE
+Message[305]: Using default destination of 1 (file).
+01AE   0AD9           00915         incf countTimeL ; add 10mS
+01AF                  00916 LEFT_STEP
+01AF   0859           00917         movfw countTimeL 
+01B0   3A0A           00918         xorlw 0x0a ; 10 * 10mS = 100mS
+01B1   1D03           00919         btfss STATUS,Z ; True: Skip to LEFT_STEP_TRUE
+01B2   29B5           00920         goto LEFT_STEP_END
+01B3                  00921 LEFT_STEP_TRUE
+                      00922 ; Sier at fromPosition er et step til høyre. Må da gå et steg til venstre..
+Message[305]: Using default destination of 1 (file).
+01B3   03CD           00923      decf fromPosition ; 
+01B4   01D9           00924      clrf countTimeL
+01B5                  00925 LEFT_STEP_END
+01B5   29B7           00926         goto LEFTWARDS_END
+01B6                  00927 LEFTWARDS_FALSE
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 20
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+01B6   01D9           00928   clrf countTimeL
+01B7                  00929 LEFTWARDS_END
+                      00930 
+                      00931 
+                      00932 ;--------------------------
+                      00933 ;  AD - each 100mS
+                      00934 ;--------------------------
+Message[305]: Using default destination of 1 (file).
+01B7   0AD7           00935         incf mS_Counts
+01B8                  00936 START_AD ; every 100mS
+01B8   0857           00937         movfw mS_Counts
+01B9   3A0A           00938         xorlw 0x0a ; = 10mS*10 = 100mS
+01BA   1D03           00939         btfss STATUS,Z ; True: Skip to START_AD_TRUE
+01BB   29BF           00940         goto START_AD_END
+01BC                  00941 START_AD_TRUE
+01BC   01D7           00942         clrf mS_Counts
+                      00943 ; Get new toPosition
+01BD   21D3           00944         call AD_CONVERT ; Result in work
+01BE   00CC           00945         movwf toPosition 
+                      00946 ;   bcf STATUS,C
+                      00947 ;       rrf toPosition  ; 128 positions max
+01BF                  00948 START_AD_END
+01BF                  00949 COUNT_UP_10mS_END
+                      00950 
+                      00951 ;--------------------------
+                      00952 ;       Direction 
+                      00953 ;--------------------------
+                      00954 ; newDirection -> oldDirection
+01BF   084E           00955         movfw newDirection
+01C0   00CF           00956         movwf oldDirection
+                      00957 ; toPosition - fromPosition => STATUS -> newDirection.  C=1 -> Right
+                      00958 ; STATUS ---- -Z-C >> newDirection
+                      00959 ;                ---- -1-x : Rest (Zero)
+                      00960 ;                ---- -0-0 : Left
+                      00961 ;                ---- -0-1 : Right
+01C1   084C           00962         movfw toPosition
+01C2   1403           00963         bsf STATUS,C    ; if C goes L, the subtraction has borrowed (2-compl addition)
+01C3   024D           00964         subwf fromPosition,w ; fromPosition - toPosition => w.  C=1 -> R
+01C4   0803           00965         movfw STATUS
+01C5   3905           00966         andlw 0x05  ; ---- -x-x
+01C6   00CE           00967         movwf newDirection 
+                      00968 
+                      00969 ;--------------------------
+                      00970 ;       Pattern to use (decided for each PWM)
+                      00971 ;--------------------------
+01C7   0850           00972         movfw patternNr
+01C8   3903           00973         andlw 0x03  ; ---- --xx
+01C9   3E30           00974     addlw 0x30 ; pattern area: 30-33
+01CA   0084           00975         movwf FSR  ; File index Register
+01CB   0800           00976         movfw INDF ; Value in indexedFile[FSR]
+01CC   00D1           00977     movwf pattern
+                      00978 
+01CD                  00979 FREE_WHEELING ; if (RL == 11) : pattern = 0000 
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 21
+
+
+LOC  OBJECT CODE     LINE SOURCE TEXT
+  VALUE
+
+01CD   0852           00980         movfw RL
+01CE   3A48           00981         xorlw 0x48 ; -L-- R---
+01CF   1D03           00982         btfss STATUS,Z ; True: Skip to FREE_WHEELING_TRUE
+01D0   29D2           00983         goto FREE_WHEELING_END
+01D1                  00984 FREE_WHEELING_TRUE
+01D1   01D1           00985     clrf pattern
+01D2                  00986 FREE_WHEELING_END
+                      00987 
+01D2                  00988 TIC_END
+01D2   284F           00989         goto MAIN_LOOP
+                      00990 
+                      00991 
+                      00992 ;========================================
+                      00993 ;         SUBROUTINES  
+                      00994 ;========================================
+01D3                  00995 AD_CONVERT ; result in work
+01D3   149F           00996         bsf     ADCON0,GO               ; Start convertion 
+01D4                  00997 AD_CONVERTION_GOING_ON          ; Wait for conversion to complete
+01D4   189F           00998         btfsc ADCON0,GO                 ; Finished when L: Skip to AD_CONVERT_FINISHED_END
+01D5   29D4           00999         goto AD_CONVERTION_GOING_ON
+01D6                  01000 AD_CONVERT_TRUE
+                      01001         ; Change scale to 128 bit 
+01D6   1003           01002         bcf STATUS,C  ; Rotate (bit0 -> C -> bit7)
+01D7   0C1E           01003         rrf ADRESH,w  ; 8bit + 2bit : ADRESH + ADRESL: ADRESH->w
+01D8   1003           01004         bcf STATUS,C  ; clear carry 
+01D9                  01005 AD_CONVERT_END
+01D9   0008           01006         return
+                      01007 
+                      01008 
+                      01009 
+                      01010 
+                      01011 
+                      01012 
+                      01013 
+                      01014         end
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 22
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+ABDEN                             00000000
+ABDOVF                            00000007
+ADCON0                            0000001F
+ADCON1                            0000009F
+ADCS0                             00000004
+ADCS1                             00000005
+ADCS2                             00000006
+ADDEN                             00000003
+ADFM                              00000007
+ADIE                              00000006
+ADIF                              00000006
+ADON                              00000000
+ADRESH                            0000001E
+ADRESL                            0000009E
+AD_CONVERT                        000001D3
+AD_CONVERTION_GOING_ON            000001D4
+AD_CONVERT_END                    000001D9
+AD_CONVERT_TRUE                   000001D6
+ANS0                              00000000
+ANS1                              00000001
+ANS2                              00000002
+ANS3                              00000003
+ANS4                              00000004
+ANS5                              00000005
+ANS6                              00000006
+ANS7                              00000007
+ANSEL                             0000011E
+ANSELH                            0000011F
+BAUDCTL                           0000009B
+BF                                00000000
+BRG0                              00000000
+BRG1                              00000001
+BRG10                             00000002
+BRG11                             00000003
+BRG12                             00000004
+BRG13                             00000005
+BRG14                             00000006
+BRG15                             00000007
+BRG16                             00000003
+BRG2                              00000002
+BRG3                              00000003
+BRG4                              00000004
+BRG5                              00000005
+BRG6                              00000006
+BRG7                              00000007
+BRG8                              00000000
+BRG9                              00000001
+BRGH                              00000002
+C                                 00000000
+C1CH0                             00000000
+C1CH1                             00000001
+C1IE                              00000005
+C1IF                              00000005
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 23
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+C1OE                              00000005
+C1ON                              00000007
+C1OUT                             00000006
+C1POL                             00000004
+C1R                               00000002
+C1SEN                             00000005
+C1VREN                            00000007
+C2CH0                             00000000
+C2CH1                             00000001
+C2IE                              00000006
+C2IF                              00000006
+C2OE                              00000005
+C2ON                              00000007
+C2OUT                             00000006
+C2POL                             00000004
+C2R                               00000002
+C2REN                             00000004
+C2SYNC                            00000000
+C2VREN                            00000006
+CCP1CON                           00000017
+CCP1IF                            00000002
+CCP1M0                            00000000
+CCP1M1                            00000001
+CCP1M2                            00000002
+CCP1M3                            00000003
+CCPIE                             00000002
+CCPR1H                            00000016
+CCPR1L                            00000015
+CHS0                              00000002
+CHS1                              00000003
+CHS2                              00000004
+CHS3                              00000005
+CKE                               00000006
+CKP                               00000004
+CKTXP                             00000004
+CM1CON0                           00000119
+CM2CON0                           0000011A
+CM2CON1                           0000011B
+COUNT_UP_10mS                     000001A4
+COUNT_UP_10mS_END                 000001BF
+COUNT_UP_10mS_TRUE                000001A9
+CREN                              00000004
+CSRC                              00000007
+DC                                00000001
+DC1B0                             00000004
+DC1B1                             00000005
+DELTASNITTSUM                     00000073
+DELTASNITTSUM_END                 0000007C
+DELTASNITTSUM_NOT_OK              0000007A
+DIV16                             00000173
+DIV16_END                         0000018D
+DIV16_LOOP                        00000176
+DIV16_SUB_END                     0000018C
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 24
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+DIV16_TRUE                        0000017A
+D_A_NOT                           00000005
+ECCPAS                            0000001D
+ECCPAS0                           00000004
+ECCPAS1                           00000005
+ECCPAS2                           00000006
+ECCPASE                           00000007
+EEADR                             0000010D
+EEADRH                            0000010F
+EECON1                            0000018C
+EECON2                            0000018D
+EEDATA                            0000010C
+EEDATH                            0000010E
+EEIE                              00000004
+EEIF                              00000004
+EEPGD                             00000007
+F                                 00000001
+FEIL                              000001A0
+FERR                              00000002
+FREE_WHEELING                     000001CD
+FREE_WHEELING_END                 000001D2
+FREE_WHEELING_TRUE                000001D1
+FSR                               00000004
+GIE                               00000007
+GO                                00000001
+GO_DONE                           00000001
+HTS                               00000002
+INDF                              00000000
+INTCON                            0000000B
+INTE                              00000004
+INTEDG                            00000006
+INTF                              00000001
+IOC                               00000096
+IOC0                              00000000
+IOC1                              00000001
+IOC2                              00000002
+IOC3                              00000003
+IOC4                              00000004
+IOC5                              00000005
+IOCA                              00000096
+IOCA0                             00000000
+IOCA1                             00000001
+IOCA2                             00000002
+IOCA3                             00000003
+IOCA4                             00000004
+IOCA5                             00000005
+IOCB                              00000116
+IOCB4                             00000004
+IOCB5                             00000005
+IOCB6                             00000006
+IOCB7                             00000007
+IRCF0                             00000004
+IRCF1                             00000005
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 25
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+IRCF2                             00000006
+IRP                               00000007
+LEFTWARDS                         000001AA
+LEFTWARDS_END                     000001B7
+LEFTWARDS_FALSE                   000001B6
+LEFTWARDS_TRUE                    000001AE
+LEFT_STEP                         000001AF
+LEFT_STEP_END                     000001B5
+LEFT_STEP_TRUE                    000001B3
+LTS                               00000001
+MAIN                              0000004F
+MAIN_LOOP                         0000004F
+MC1OUT                            00000007
+MC2OUT                            00000006
+MSK                               00000093
+MULT8                             00000191
+MULT8_ADD                         00000196
+MULT8_ADD_END                     0000019B
+MULT8_ADD_TRUE                    00000198
+MULT8_END                         0000019F
+MULT8_TRUE                        00000194
+MULT8x4                           0000018D
+NOT_BOD                           00000000
+NOT_DONE                          00000001
+NOT_PD                            00000003
+NOT_POR                           00000001
+NOT_RABPU                         00000007
+NOT_T1SYNC                        00000002
+NOT_TO                            00000004
+NULLSNITT_DIV                     0000010E
+NULLSNITT_DIV_5                   00000113
+NULLSNITT_DIV_6                   00000122
+NULLSNITT_DIV_END                 00000136
+OERR                              00000001
+OPPSETT_AV_ENHETER                0000001C
+OPPSTART                          0000004A
+OPTION_REG                        00000081
+OSCCON                            0000008F
+OSCTUNE                           00000090
+OSFIE                             00000007
+OSFIF                             00000007
+OSTS                              00000003
+P                                 00000004
+P1M0                              00000006
+P1M1                              00000007
+PCL                               00000002
+PCLATH                            0000000A
+PCON                              0000008E
+PDC0                              00000000
+PDC1                              00000001
+PDC2                              00000002
+PDC3                              00000003
+PDC4                              00000004
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 26
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+PDC5                              00000005
+PDC6                              00000006
+PEIE                              00000006
+PIE1                              0000008C
+PIE2                              0000008D
+PIR1                              0000000C
+PIR2                              0000000D
+PORTA                             00000005
+PORTB                             00000006
+PORTC                             00000007
+PR2                               00000092
+PRSEN                             00000007
+PS0                               00000000
+PS1                               00000001
+PS2                               00000002
+PSA                               00000003
+PSSAC0                            00000002
+PSSAC1                            00000003
+PSSBD0                            00000000
+PSSBD1                            00000001
+PSTRCON                           0000019D
+PULSR                             00000002
+PULSS                             00000003
+PWM1CON                           0000001C
+RABIE                             00000003
+RABIF                             00000000
+RCIDL                             00000006
+RCIE                              00000005
+RCIF                              00000005
+RCREG                             0000001A
+RCSTA                             00000018
+RD                                00000000
+RL                                00000052
+RP0                               00000005
+RP1                               00000006
+RX9                               00000006
+RX9D                              00000000
+R_W_NOT                           00000002
+S                                 00000003
+SBODEN                            00000004
+SCS                               00000000
+SENB                              00000003
+SETUP_MAIN                        0000004E
+SMP                               00000007
+SPBRG                             00000099
+SPBRGH                            0000009A
+SPEN                              00000007
+SR0                               00000006
+SR1                               00000007
+SRCON                             0000019E
+SREN                              00000005
+SSPADD                            00000093
+SSPBUF                            00000013
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 27
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+SSPCON                            00000014
+SSPEN                             00000005
+SSPIE                             00000003
+SSPIF                             00000003
+SSPM0                             00000000
+SSPM1                             00000001
+SSPM2                             00000002
+SSPM3                             00000003
+SSPMSK                            00000093
+SSPOV                             00000006
+SSPSTAT                           00000094
+START_AD                          000001B8
+START_AD_END                      000001BF
+START_AD_TRUE                     000001BC
+STATUS                            00000003
+STRA                              00000000
+STRB                              00000001
+STRC                              00000002
+STRD                              00000003
+STRSYNC                           00000004
+SWDTEN                            00000000
+SYNC                              00000004
+T0CS                              00000005
+T0IE                              00000005
+T0IF                              00000002
+T0SE                              00000004
+T1CKPS0                           00000004
+T1CKPS1                           00000005
+T1CON                             00000010
+T1GINV                            00000007
+T1GSS                             00000001
+T1IE                              00000000
+T1IF                              00000000
+T1OSCEN                           00000003
+T2CKPS0                           00000000
+T2CKPS1                           00000001
+T2CON                             00000012
+T2IE                              00000001
+T2IF                              00000001
+TIC                               000001A0
+TIC_END                           000001D2
+TIC_TRUE                          000001A2
+TIMER0_IR                         0000000D
+TIMER0_IR_END                     00000010
+TIMER0_IR_TRUE                    0000000F
+TIMER2_IR                         00000010
+TIMER2_IR_END                     00000018
+TIMER2_IR_TRUE                    00000012
+TMR0                              00000001
+TMR1CS                            00000001
+TMR1GE                            00000006
+TMR1H                             0000000F
+TMR1IE                            00000000
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 28
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+TMR1IF                            00000000
+TMR1L                             0000000E
+TMR1ON                            00000000
+TMR2                              00000011
+TMR2IE                            00000001
+TMR2IF                            00000001
+TMR2ON                            00000002
+TOUTPS0                           00000003
+TOUTPS1                           00000004
+TOUTPS2                           00000005
+TOUTPS3                           00000006
+TRISA                             00000085
+TRISA0                            00000000
+TRISA1                            00000001
+TRISA2                            00000002
+TRISA3                            00000003
+TRISA4                            00000004
+TRISA5                            00000005
+TRISB                             00000086
+TRISB4                            00000004
+TRISB5                            00000005
+TRISB6                            00000006
+TRISB7                            00000007
+TRISC                             00000087
+TRISC0                            00000000
+TRISC1                            00000001
+TRISC2                            00000002
+TRISC3                            00000003
+TRISC4                            00000004
+TRISC5                            00000005
+TRISC6                            00000006
+TRISC7                            00000007
+TRMT                              00000001
+TUN0                              00000000
+TUN1                              00000001
+TUN2                              00000002
+TUN3                              00000003
+TUN4                              00000004
+TX9                               00000006
+TX9D                              00000000
+TXEN                              00000005
+TXIE                              00000004
+TXIF                              00000004
+TXREG                             00000019
+TXSTA                             00000098
+UA                                00000001
+ULPWUE                            00000005
+V1                                00000020
+V12                               00000028
+V14                               0000002C
+V1_ER_MAX                         0000007D
+V1_ER_MAX_END                     0000008B
+V1_ER_MAX_TRUE                    00000082
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 29
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+V2                                00000021
+V2_ER_MAX                         0000008B
+V2_ER_MAX_END                     0000009A
+V2_ER_MAX_TRUE                    00000090
+V3                                00000022
+V34                               00000029
+V3_ER_MAX                         0000009A
+V3_ER_MAX_END                     000000A9
+V3_ER_MAX_TRUE                    0000009F
+V4                                00000023
+V4_ER_MAX                         000000A9
+V4_ER_MAX_END                     000000B8
+V4_ER_MAX_TRUE                    000000AE
+V5                                00000024
+V56                               0000002A
+V58                               0000002D
+V5_ER_MAX                         000000B8
+V5_ER_MAX_END                     000000C7
+V5_ER_MAX_TRUE                    000000BD
+V6                                00000025
+V6_ER_MAX                         000000C7
+V6_ER_MAX_END                     000000D6
+V6_ER_MAX_TRUE                    000000CC
+V7                                00000026
+V78                               0000002B
+V7_ER_MAX                         000000D6
+V7_ER_MAX_END                     000000E5
+V7_ER_MAX_TRUE                    000000DB
+V8                                00000027
+V8_ER_MAX                         000000E5
+V8_ER_MAX_END                     000000F3
+V8_ER_MAX_TRUE                    000000EA
+VCFG                              00000006
+VMAX_UNDER_DELTASNITT             000000F3
+VMAX_UNDER_DELTASNITT_END         000000FA
+VMAX_UNDER_DELTASNITT_FALSE       000000F8
+VP6EN                             00000004
+VR0                               00000000
+VR1                               00000001
+VR2                               00000002
+VR3                               00000003
+VRCON                             00000118
+VRR                               00000005
+Vmax                              00000032
+VmaxH                             00000034
+VmaxNr                            00000039
+VmaxSum                           0000003E
+VmaxSumH                          0000003F
+VmaxSumL                          0000003D
+VmaxV                             00000033
+W                                 00000000
+WCOL                              00000007
+WDTCON                            00000097
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 30
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+WDTPS0                            00000001
+WDTPS1                            00000002
+WDTPS2                            00000003
+WDTPS3                            00000004
+WPU                               00000095
+WPUA                              00000095
+WPUA0                             00000000
+WPUA1                             00000001
+WPUA2                             00000002
+WPUA4                             00000004
+WPUA5                             00000005
+WPUB                              00000115
+WPUB4                             00000004
+WPUB5                             00000005
+WPUB6                             00000006
+WPUB7                             00000007
+WR                                00000001
+WREN                              00000002
+WRERR                             00000003
+WUE                               00000001
+Z                                 00000002
+_BOD_NSLEEP                       00003EFF
+_BOD_OFF                          00003CFF
+_BOD_ON                           00003FFF
+_BOD_SBODEN                       00003DFF
+_CPD_OFF                          00003FFF
+_CPD_ON                           00003F7F
+_CP_OFF                           00003FFF
+_CP_ON                            00003FBF
+_EC_OSC                           00003FFB
+_EXTRC                            00003FFF
+_EXTRCIO                          00003FFE
+_EXTRC_OSC_CLKOUT                 00003FFF
+_EXTRC_OSC_NOCLKOUT               00003FFE
+_FCMEN_OFF                        000037FF
+_FCMEN_ON                         00003FFF
+_HS_OSC                           00003FFA
+_IESO_OFF                         00003BFF
+_IESO_ON                          00003FFF
+_INTOSC                           00003FFD
+_INTOSCIO                         00003FFC
+_INTRC_OSC_CLKOUT                 00003FFD
+_INTRC_OSC_NOCLKOUT               00003FFC
+_LP_OSC                           00003FF8
+_MCLRE_OFF                        00003FDF
+_MCLRE_ON                         00003FFF
+_PWRTE_OFF                        00003FFF
+_PWRTE_ON                         00003FEF
+_WDT_OFF                          00003FF7
+_WDT_ON                           00003FFF
+_XT_OSC                           00003FF9
+__16F690                          00000001
+a16H                              00000048
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 31
+
+
+SYMBOL TABLE
+  LABEL                             VALUE 
+
+a16L                              00000047
+antINullSnitt                     00000031
+b16H                              0000004A
+b16L                              00000049
+bits                              00000046
+countTimeL                        00000059
+countTimeR                        00000058
+countUp10mS                       00000056
+dV                                00000054
+delta                             0000002F
+deltasnitt                        00000030
+deltastatus                       0000005A
+event                             00000053
+fromPosition                      0000004D
+intA8                             00000040
+intB4                             00000041
+mS_Counts                         00000057
+mainStatus                        0000007E
+mainWork                          0000007D
+maxH                              00000036
+maxL                              00000035
+mulSumH                           00000045
+mulSumL                           00000044
+newDirection                      0000004E
+oldDirection                      0000004F
+pattern                           00000051
+patternNr                         00000050
+posisjon                          0000004B
+res16H                            00000043
+res16L                            00000042
+snitt                             0000002E
+snittDelta                        0000005B
+snittH                            00000038
+snittL                            00000037
+snittNull                         0000003C
+snitt_5                           0000003B
+stepLength                        00000055
+sumMax                            0000003A
+toPosition                        0000004C
+
+
+MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
+
+0000 : XXX-XXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0040 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0080 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+MPASM  4.00 Released                                LASER.ASM   10-31-2016  22:33:29         PAGE 32
+
+
+MEMORY USAGE MAP ('X' = Used,  '-' = Unused)
+
+
+00C0 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0100 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0140 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+0180 : XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX XXXXXXXXXXXXXXXX
+01C0 : XXXXXXXXXXXXXXXX XXXXXXXXXX------ ---------------- ----------------
+2000 : -------X-------- ---------------- ---------------- ----------------
+
+All other memory blocks unused.
+
+Program Memory Words Used:   473
+Program Memory Words Free:  3623
+
+
+Errors   :     0
+Warnings :     0 reported,     0 suppressed
+Messages :    76 reported,     0 suppressed
+
+
